@@ -2,7 +2,6 @@ using Yao
 using BitBasis
 using LinearAlgebra
 using Statistics
-using LsqFit
 using QuAlgorithmZoo: Sequence
 
 include("circuit.jl")
@@ -76,21 +75,15 @@ end
 
 #hei_model = Heisenberg(4;periodic = false)
 
-function cos_fit_min(x::Array{Float64,1},y::Array{Float64,1},m::Int,maxiter,epsil)
-  guess_c = mean(y);
-  guess_a = std(y);
-  guess_b = 0.0;
-  guess_w = 1;
-  guess = [guess_a guess_w guess_b guess_c];
-  x0= vec(x); y0 = vec(y);
-  fun(x,p) = x[2] - (p[1].*cos.(p[2] .*x .- p[3]) + p[4]);
-  xy = [x0 y0];
-  coefs, converged,iter = CurveFit.nonlinear_fit(xy,fun,guess,epsil,maxiter);
-  return ( abs(coefs[2]-1) < 0.1 ? (coefs[1] > 0 ? mod(coefs[3] + π, 2*π) : coefs[3]) : throw(error("Failed to approximate with sine function")))
+function cos_fit_min(x::Array{Float64,1},y::Array{Float64,1})
+  c = (y[1] + y[3])/2;
+  b = atan((y[1] - y[3])/(2*y[2] - y[1] -y[3])) - x[1];
+  a = (y[1] - y[3])/(2*sin(x[1] + b));
+  return a > 0 ? mod2pi(π + b) : mod2pi(b - π)
 end
 
 
-function train(circuit, model; m = 3, VG = nothing, maxiter = 200, epsil = 0.000001, nbatch = 1024)
+function train(circuit, model; m = 3, VG = nothing, maxiter = 200, nbatch = 1024)
     rots = Sequence(collect_blocks(Union{RotationGate,PutBlocks{<:Int,<:Int,RotationGate}},circuit))
     loss_history = Float64[]
     params = Float64[]
@@ -102,9 +95,12 @@ function train(circuit, model; m = 3, VG = nothing, maxiter = 200, epsil = 0.000
             for k in 1:m
                 push!(tmp,para)
                 push!(E,energy(circuit,model;nbatch=nbatch))
-                para += 2*π/m
+                dispatch!(+,r,(π/2,));
+                para += π/2;
             end
-            push!(params,cos_fit_min(tmp,E,m,maxiter,epsil));
+            r_op = cos_fit_min(tmp,E);
+            dispatch!(r,r_op);
+            push!(params,r_op);
         end
         dispatch!(rots,params);
         push!(loss_history,energy(circuit,model,nbatch=nbatch)/nspin(model));
@@ -122,3 +118,18 @@ function train(circuit, model; m = 3, VG = nothing, maxiter = 200, epsil = 0.000
     end
     loss_history,circuit
 end
+
+lattice_size = 14;
+mycircuit = twoqubit_circuit(lattice_size);
+model = Heisenberg(lattice_size;periodic = false)
+h = hamiltionian(model)
+
+res = eigen(mat(h)|>Matrix)
+EG = res.values[1]/nspin(model)
+@show EG
+VG = res.vectors[:,1]
+
+nparameters(mycircuit)
+
+dispatch!(mycircuit,:random)
+loss_history, mycircuit = train(mycircuit,model;maxiter = 20,VG = VG)
