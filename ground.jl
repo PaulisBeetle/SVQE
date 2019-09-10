@@ -3,7 +3,7 @@ using BitBasis
 using LinearAlgebra
 using Statistics
 using QuAlgorithmZoo: Sequence
-using Plots
+using UnicodePlots
 
 include("circuit.jl")
 
@@ -123,31 +123,32 @@ end
 
 function iscos(mycircuit,model,index = 3,m = 50,nbatch = 1024)
     rots = Sequence(collect_blocks(RotationGate,mycircuit))
-    for (j,r) in enumerate(rots.blocks)
-        if j == index
-            E = Float64[]
-            para = Float64[]
-            for i in 1:m
-                push!(E,energy(mycircuit,model,nbatch = nbatch))
-                push!(para,parameters(r)[1])
-                dispatch!(+,r,2.0*π/m)
-            end
-            return E,para
-        end
+    @show rots
+    E = Float64[]
+    para = Float64[]
+    for i in 1:m
+        push!(E, energy(mycircuit,model,nbatch = nbatch))
+        push!(para,parameters(rots[index])[1])
+        dispatch!(rots[index],2.0*π*i/m)
     end
+    return E,para
 end
 
 #########################################################################
 lattice_size = 6;
-mycircuit = tcircuit(lattice_size);
-mcircuit = fcircuit(lattice_size);
+mycircuit = dispatch!(tcircuit(lattice_size), :random);
+mcircuit = dispatch!(fcircuit(lattice_size), :random);
 model = Heisenberg(lattice_size;periodic = false)
 h = hamiltionian(model)
+
+
+energy_exact() = expect(h, zero_state(lattice_size) |> mcircuit) |> real
+energy_exact()
 
 res = eigen(mat(h)|>Matrix)
 EG = res.values[1]/nspin(model)
 @show EG
 VG = res.vectors[:,1]
 
-E,para = iscos(mycircuit,model)
-plot(para,E)
+E,para = iscos(mycircuit,model,20)
+lineplot(para,E)
