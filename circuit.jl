@@ -12,8 +12,10 @@ A(n,i) = chain(
         put(n,i+1=>Rz(0.0)),
         pswap(n,i,i+1,0.0),
         put(n,i=>Rz(0.0)),
-        Measure{n,1,AbstractBlock,typeof(rng)}(rng,Z,(i,),0,false),
         )
 
 circuit(n) = chain(n,A(n,i) for i in 1:(n-1));
-twoqubit_circuit(n) = chain(n,circuit(n),put(n,n=>Rz(0.0)),Measure{n,1,AbstractBlock,typeof(rng)}(rng,Z,(n,),0,false))
+measure_all(n) = chain(n,Measure{n,1,AbstractBlock,typeof(rng)}(rng,Z,(i,),0,false) for i in 1:n)
+tcircuit(n) = chain(n,circuit(n),put(n,n=>Rz(0.0)),measure_all(n))
+
+fcircuit(n) = chain(n,circuit(n),put(n,n=>Rz(0.0)))

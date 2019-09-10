@@ -3,6 +3,7 @@ using BitBasis
 using LinearAlgebra
 using Statistics
 using QuAlgorithmZoo: Sequence
+using Plots
 
 include("circuit.jl")
 
@@ -84,14 +85,14 @@ end
 
 
 function train(circuit, model; m = 3, VG = nothing, maxiter = 200, nbatch = 1024)
-    rots = Sequence(collect_blocks(Union{RotationGate,PutBlocks{<:Int,<:Int,RotationGate}},circuit))
+    rots = Sequence(collect_blocks(RotationGate,circuit))
     loss_history = Float64[]
-    params = Float64[]
     for i in 0:maxiter
+        params = Float64[]
         for (j,r) in enumerate(rots.blocks)
             E = Float64[]
             tmp = Float64[]
-            para = parameter(r)
+            para = parameters(r)[1]   #parameters return a one-element arrary
             for k in 1:m
                 push!(tmp,para)
                 push!(E,energy(circuit,model;nbatch=nbatch))
@@ -106,11 +107,12 @@ function train(circuit, model; m = 3, VG = nothing, maxiter = 200, nbatch = 1024
         push!(loss_history,energy(circuit,model,nbatch=nbatch)/nspin(model));
 
         if i%10==0
-            print("Iter $Ii, E/N = $(loss_history[end])")
-            if !(VG isa nothing)
-                dispatch!(circuit)
+            print("Iter $i, E/N = $(loss_history[end])")
+            if !(VG == nothing)
+                dispatch!(circuit,params)
                 fid = fidelity(circuit,VG)
-                println(", fidelity = $fid")
+                print(", fidelity = $fid")
+                println(",parameters = $params")
             else
                 println()
             end
@@ -119,8 +121,26 @@ function train(circuit, model; m = 3, VG = nothing, maxiter = 200, nbatch = 1024
     loss_history,circuit
 end
 
-lattice_size = 14;
-mycircuit = twoqubit_circuit(lattice_size);
+function iscos(mycircuit,model,index = 3,m = 50,nbatch = 1024)
+    rots = Sequence(collect_blocks(RotationGate,mycircuit))
+    for (j,r) in enumerate(rots.blocks)
+        if j == index
+            E = Float64[]
+            para = Float64[]
+            for i in 1:m
+                push!(E,energy(mycircuit,model,nbatch = nbatch))
+                push!(para,parameters(r)[1])
+                dispatch!(+,r,2.0*π/m)
+            end
+            return E,para
+        end
+    end
+end
+
+#########################################################################
+lattice_size = 6;
+mycircuit = tcircuit(lattice_size);
+mcircuit = fcircuit(lattice_size);
 model = Heisenberg(lattice_size;periodic = false)
 h = hamiltionian(model)
 
@@ -129,7 +149,5 @@ EG = res.values[1]/nspin(model)
 @show EG
 VG = res.vectors[:,1]
 
-nparameters(mycircuit)
-
-dispatch!(mycircuit,:random)
-loss_history, mycircuit = train(mycircuit,model;maxiter = 20,VG = VG)
+E,para = iscos(mycircuit,model)
+plot(para,E)
