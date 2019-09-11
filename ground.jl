@@ -3,7 +3,9 @@ using BitBasis
 using LinearAlgebra
 using Statistics
 using QuAlgorithmZoo: Sequence
-using UnicodePlots
+using Plots
+using LsqFit
+using FFTW
 
 include("circuit.jl")
 
@@ -77,78 +79,124 @@ end
 #hei_model = Heisenberg(4;periodic = false)
 
 function cos_fit_min(x::Array{Float64,1},y::Array{Float64,1})
-  c = (y[1] + y[3])/2;
-  b = atan((y[1] - y[3])/(2*y[2] - y[1] -y[3])) - x[1];
-  a = (y[1] - y[3])/(2*sin(x[1] + b));
-  return a > 0 ? mod2pi(π + b) : mod2pi(b - π)
+#   A = std(y);
+#    b = mean(y);
+#    w = 1.0;
+#    ph = 0.0;
+#    x0 = vec(x);
+#    p = [A,w,ph,b];
+#    fun(x0,p) = p[1].*sin.(p[2].*x0 .+ p[3]) .+ p[4];
+#    fit = curve_fit(fun,x0,y0,p);
+#    return fit.param[1] > 0 ? mod2pi(3/2*π - fit.param[3]) : mod2pi(π/2 - fit.param[3])
+    b = (y[1] + y[3])/2
+    ϕ = atan((y[1] - b)/(y[2] - b)) - x[1]
+    A = (y[1] - b)/sin(x[1] + ϕ)
+    if A < 0
+        A = -A
+        ϕ = mod2pi(ϕ+π)
+    else
+        ϕ = mod2pi(ϕ)
+    end
+    return A,ϕ,b
 end
 
+function optimalr(A,ϕ,b)
+    A = median(A)
+    ϕ = median(ϕ)
+    b = median(b)
+    #A = mean(A)
+    #ϕ = mean(ϕ)
+    #b = mean(b)
+    return mod2pi(3/2*π - ϕ)
+end
 
-function train(circuit, model; m = 3, VG = nothing, maxiter = 200, nbatch = 1024)
+function train(circuit, model; m = 5, VG = nothing, maxiter = 3, nbatch = 1024)
     rots = Sequence(collect_blocks(RotationGate,circuit))
+    mcircuit = fcircuit(nqubits(circuit));
     loss_history = Float64[]
     for i in 0:maxiter
-        params = Float64[]
         for (j,r) in enumerate(rots.blocks)
-            E = Float64[]
-            tmp = Float64[]
-            para = parameters(r)[1]   #parameters return a one-element arrary
-            for k in 1:m
-                push!(tmp,para)
-                push!(E,energy(circuit,model;nbatch=nbatch))
-                dispatch!(+,r,(π/2,));
-                para += π/2;
+            A = fill(0.0,m)
+            ϕ = fill(0.0,m)
+            b = fill(0.0,m)
+            para = parameters(r)[1]                 #parameters return a one-element arrary
+            for k in 1:m                            #m denotes the group of "three points"
+                E = Float64[]                       #energy array of three points
+                tmp = Float64[]                     #para array of three points
+                para += π/2 * (k-1)/m;              #initial para of each group,i.e. the first para
+                dispatch!(r,para)                   #parameterized
+                para_tmp = copy(para);              #tmp variable
+                for l in 1:3
+                    push!(tmp,para_tmp)
+                    push!(E,energy(circuit,model;nbatch=nbatch))
+                    dispatch!(+,r,π/2);
+                    para_tmp += π/2;
+                end
+                A[k],ϕ[k],b[k] = cos_fit_min(tmp,E);
             end
-            r_op = cos_fit_min(tmp,E);
-            dispatch!(r,r_op);
-            push!(params,r_op);
-        end
-        dispatch!(rots,params);
-        push!(loss_history,energy(circuit,model,nbatch=nbatch)/nspin(model));
-
-        if i%10==0
-            print("Iter $i, E/N = $(loss_history[end])")
+            dispatch!(r,optimalr(A,ϕ,b));
+            push!(loss_history,energy(circuit,model,nbatch=nbatch)/nspin(model));
+            print("Iter $i.$j, E/N = $(loss_history[end])")
             if !(VG == nothing)
-                dispatch!(circuit,params)
-                fid = fidelity(circuit,VG)
-                print(", fidelity = $fid")
-                println(",parameters = $params")
+                dispatch!(mcircuit,parameters(circuit))
+                fid = fidelity(mcircuit,VG)
+                #println(", fidelity = $fid, coefficients of sine function: A, ϕ, b: $A, $ϕ, $b")
+                println(", fidelity = $fid")
             else
                 println()
             end
         end
+        #push!(loss_history,energy(circuit,model,nbatch=nbatch)/nspin(model));
+        #if i%10==0
+            #print("Iter $i, E/N = $(loss_history[end])")
+        #=    if !(VG == nothing)
+                dispatch!(mcircuit,parameters(circuit))
+                fid = fidelity(mcircuit,VG)
+                println(", fidelity = $fid")
+            else
+                println()
+            end=#
+        #end
     end
     loss_history,circuit
 end
 
-function iscos(mycircuit,model,index = 3,m = 50,nbatch = 1024)
+function iscos(mycircuit,model,index = 2,m = 20,nbatch = 1024)
     rots = Sequence(collect_blocks(RotationGate,mycircuit))
-    @show rots
     E = Float64[]
     para = Float64[]
     for i in 1:m
         push!(E, energy(mycircuit,model,nbatch = nbatch))
         push!(para,parameters(rots[index])[1])
-        dispatch!(rots[index],2.0*π*i/m)
+        dispatch!(+,rots[index],2.0*π/m)
     end
-    return E,para
+    A = std(E);
+    b = mean(E);
+    w = 1.0;
+    ph = 0.0;
+    x0 = vec(para);
+    y0 = vec(E);
+    p = [A,w,ph,b];
+    fun(x0,p) = p[1].*sin.(p[2].*x0 .+ p[3]) .+ p[4];
+    fit = curve_fit(fun,x0,y0,p);
+    return E,para,fit.param
 end
+
 
 #########################################################################
 lattice_size = 6;
-mycircuit = dispatch!(tcircuit(lattice_size), :random);
-mcircuit = dispatch!(fcircuit(lattice_size), :random);
+
 model = Heisenberg(lattice_size;periodic = false)
 h = hamiltionian(model)
-
-
-energy_exact() = expect(h, zero_state(lattice_size) |> mcircuit) |> real
-energy_exact()
-
 res = eigen(mat(h)|>Matrix)
 EG = res.values[1]/nspin(model)
 @show EG
 VG = res.vectors[:,1]
 
-E,para = iscos(mycircuit,model,20)
-lineplot(para,E)
+mycircuit = dispatch!(tcircuit(lattice_size), :random);
+npara = nparameters(mycircuit)
+
+loss_history,mycircuit = train(mycircuit,model,m=5;VG = VG)
+plot([0:npara*4-1],[loss_history,fill(EG,npara*4)],label = ["QMPS","Exact"],lw = 3,ylabel = "Energy")
+E,para,coeffs = iscos(mycircuit,model,15)
+plot(para,[E,map(x->coeffs[1].*sin(coeffs[2].*x+coeffs[3])+coeffs[4],para)])
